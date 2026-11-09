@@ -1,0 +1,81 @@
+# =============================================================================
+#  R E P S   ·   auth-gate
+# =============================================================================
+[package]
+name    = "auth-gate"
+version = "0.1.0"
+
+# Minimum Supported Rust Version (MSRV)
+rust-version = "1.85"
+edition = "2024"
+
+# License
+license = "Apache-2.0 OR MIT"
+
+# Readme
+readme = "README.md"
+
+# Description
+description = "Authentication for Rust services: signed opaque session tokens, Argon2id passwords, TOTP, recovery codes and passkeys, standing with time limits, and security signals. Protocol-free, storage behind traits."
+
+# Keywords (5 max)
+keywords = ["authentication", "session", "password", "webauthn", "totp"]
+
+# Categories
+categories = ["authentication", "web-programming", "cryptography"]
+
+# Links
+homepage      = "https://github.com/jamesgober/auth-gate"
+repository    = "https://github.com/jamesgober/auth-gate"
+documentation = "https://docs.rs/auth-gate"
+
+# Authors
+authors = ["James Gober <me@jamesgober.com>"]
+
+# Development-only packages and tool configuration are never published.
+exclude = ["/fuzz", "/.cargo"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "auth_gate"
+path = "src/lib.rs"
+
+
+# FEATURE FLAGS
+# #################################
+[features]
+default = []
+# Windows builds of aws-lc-sys without a NASM install.
+prebuilt-nasm = ["crypt-io/prebuilt-nasm"]
+
+
+# DEPENDENCIES
+# #################################
+[dependencies]
+# Every cryptographic primitive: Argon2id, keyed BLAKE3, HKDF, SHA-256,
+# HOTP/TOTP, and WebAuthn signature checks (ES256, EdDSA, RS256). The one
+# audited-crypto exception to the zero third-party dependency rule.
+crypt-io = { version = "1.5", default-features = false, features = ["std", "zeroize", "mac-blake3", "hash-sha2", "kdf-hkdf", "kdf-argon2", "otp", "sign-p256", "sign-ed25519", "sign-rsa"] }
+# OS CSPRNG for tokens, challenges, and codes (first party, zero dependencies).
+mod-rand = { version = "1", default-features = false, features = ["tier3"] }
+# Time-ordered account ids, UUIDv7 (first party, zero dependencies).
+id-forge = "1"
+
+
+# DEV DEPENDENCIES
+# #################################
+[dev-dependencies]
+# Benchmarks only; never linked into the library.
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+# Property tests only; never linked into the library.
+proptest = { version = "1.6", default-features = false, features = ["std"] }
+
+
+# BENCHMARKS
+# #################################
+[[bench]]
+name = "gate"
+harness = false
