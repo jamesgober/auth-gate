@@ -1,0 +1,45 @@
+# Fuzz targets (cargo-fuzz, nightly). Development only: not part of the
+# published crate.
+[package]
+name = "auth-gate-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+auth-gate = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "token"
+path = "fuzz_targets/token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_data"
+path = "fuzz_targets/client_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "authenticator_data"
+path = "fuzz_targets/authenticator_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "second_factor"
+path = "fuzz_targets/second_factor.rs"
+test = false
+doc = false
+bench = false
