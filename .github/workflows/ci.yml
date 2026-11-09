@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, "1.85"]
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --all-features
+      - name: Doc
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  fuzz:
+    name: Fuzz (smoke)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Build fuzz targets
+        run: cargo fuzz build -O --target x86_64-unknown-linux-gnu
+        working-directory: fuzz
+      - name: Run each target for 30 seconds
+        working-directory: fuzz
+        run: |
+          for target in token client_data authenticator_data second_factor; do
+            cargo fuzz run "$target" -O --target x86_64-unknown-linux-gnu -- -max_total_time=30
+          done
+
+  security:
+    name: Security (audit + deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: Audit
+        run: cargo audit
+      - name: Deny
+        run: cargo deny check
