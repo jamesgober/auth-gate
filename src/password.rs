@@ -144,7 +144,7 @@ impl Hasher {
             return false;
         }
         let p = self.peppered(password);
-        kdf::argon2_check_with_policy(&hash.0, &*p, &Argon2Policy::new()).is_ok()
+        kdf::argon2_check_with_policy(&hash.0, &*p, &self.ceiling()).is_ok()
     }
 
     /// The same work as a check, for an account that does not exist, so
@@ -153,6 +153,18 @@ impl Hasher {
         let p = self.peppered(b"no such account");
         let _ = kdf::argon2_check(&self.dummy.0, &*p);
         false
+    }
+
+    /// The most work one stored hash may ask for: four times the configured
+    /// cost (at least 64 MiB, 8 passes, 4 lanes), so a planted hash cannot
+    /// make one check cost a gigabyte.
+    fn ceiling(&self) -> Argon2Policy {
+        let p = self.policy.params;
+        Argon2Policy::new().with_max_cost(
+            p.m_cost.saturating_mul(4).max(64 * 1024),
+            p.t_cost.saturating_mul(4).max(8),
+            p.p_cost.saturating_mul(4).max(4),
+        )
     }
 
     /// Whether `hash` was made with weaker parameters than the policy's now.

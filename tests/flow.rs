@@ -286,11 +286,12 @@ fn lockout_does_not_end_the_real_users_session() {
         w.gate.sign_in("a@x.io", PW, &client()),
         SignIn::Verified(_)
     ));
+    // The lock sits beside the standing and never replaced it.
+    let account = w.gate.identities().account(user).unwrap().unwrap();
+    assert_eq!(account.standing, Standing::Active);
     assert_eq!(
-        w.gate.identities().standing(user).unwrap(),
-        Some(Standing::Locked {
-            until: UnixTime::from_secs(1_700_000_000) + Duration::from_secs(15 * 60)
-        })
+        account.locked_until,
+        Some(UnixTime::from_secs(1_700_000_000) + Duration::from_secs(15 * 60))
     );
 }
 
@@ -307,10 +308,13 @@ fn lockout_never_erases_a_standing() {
     assert_eq!(
         w.gate.identities().standing(pending).unwrap(),
         Some(Standing::PendingVerification),
-        "locking would lift to active and skip verification"
+        "a lock never replaces the standing (it would lift to active)"
     );
     assert!(w.signals.kinds().contains(&SignalKind::SignInFailed));
-    assert!(!w.signals.kinds().contains(&SignalKind::AccountLocked));
+    assert!(
+        w.signals.kinds().contains(&SignalKind::AccountLocked),
+        "pending accounts are locked too"
+    );
 }
 
 #[test]

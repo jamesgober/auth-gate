@@ -114,6 +114,9 @@ pub struct Account {
     pub totp: Option<TotpState>,
     /// Whether the account has at least one passkey.
     pub has_passkeys: bool,
+    /// Locked against sign-in until this time after repeated failures. Kept
+    /// apart from the standing, so a lock never replaces or erases it.
+    pub locked_until: Option<UnixTime>,
     /// Role names, compiled to permissions by the authorization side.
     pub roles: Vec<Box<str>>,
     /// The tenant, in a multi-tenant service.
@@ -133,6 +136,9 @@ pub struct TotpState {
     pub last_step: u64,
     /// Whether enrolment was confirmed with a first code.
     pub confirmed: bool,
+    /// A replacement secret being enrolled (a new phone). The confirmed
+    /// secret keeps working until a code from this one confirms it.
+    pub pending: Option<TotpSecret>,
 }
 
 /// A new account.
@@ -161,6 +167,25 @@ pub trait IdentityStore: Send + Sync {
     ///
     /// [`StoreError`].
     fn lookup(&self, identifier: &Identifier) -> Result<Option<UserId>, StoreError>;
+
+    /// The account an identifier belongs to, in one read. Sign-in calls only
+    /// this, so a known and an unknown identifier cost the store the same
+    /// work. The default reads twice ([`lookup`](Self::lookup), then
+    /// [`account`](Self::account)); a networked adapter must answer in one
+    /// round trip.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`].
+    fn account_by_identifier(
+        &self,
+        identifier: &Identifier,
+    ) -> Result<Option<Account>, StoreError> {
+        match self.lookup(identifier)? {
+            Some(user) => self.account(user),
+            None => Ok(None),
+        }
+    }
 
     /// An account.
     ///
@@ -215,6 +240,30 @@ pub trait IdentityStore: Send + Sync {
     /// [`StoreError`].
     fn record_failure(&self, user: UserId, at: UnixTime, window_ms: u64)
     -> Result<u32, StoreError>;
+
+    /// Count a failed sign-in for an identifier that has no account, and
+    /// return how many fall in the last `window_ms`. One write, like
+    /// [`record_failure`](Self::record_failure), so the store work does not
+    /// tell an unknown identifier from a known one. Implementations bound
+    /// what they keep.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`].
+    fn record_unknown_failure(
+        &self,
+        identifier: &Identifier,
+        at: UnixTime,
+        window_ms: u64,
+    ) -> Result<u32, StoreError>;
+
+    /// Lock the account against sign-in until `until` (or keep a later
+    /// lock). Never touches the standing.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NotFound`] for an unknown account.
+    fn lock_until(&self, user: UserId, until: UnixTime) -> Result<(), StoreError>;
 
     /// Forget failed sign-ins (after a success).
     ///

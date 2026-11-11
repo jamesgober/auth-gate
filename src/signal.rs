@@ -8,7 +8,10 @@
 //! the other side of the bridge.
 
 use core::net::IpAddr;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use crate::{
     id::{SessionId, UserId},
@@ -212,11 +215,29 @@ impl SignalSink for NoSignals {
 }
 
 /// Keeps the last signals in memory (bounded), for tests and local
-/// development.
+/// development. Sharded per thread, so a flood of invalid tokens on many
+/// workers does not queue on one lock.
 #[derive(Debug)]
 pub struct MemorySignals {
     cap: usize,
-    log: Mutex<std::collections::VecDeque<Signal>>,
+    seq: AtomicU64,
+    shards: Vec<Mutex<std::collections::VecDeque<(u64, Signal)>>>,
+}
+
+const SIGNAL_SHARDS: usize = 8;
+
+fn shard_of_thread() -> usize {
+    use std::{cell::Cell, sync::atomic::AtomicUsize};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static SHARD: Cell<usize> = const { Cell::new(usize::MAX) };
+    }
+    SHARD.with(|s| {
+        if s.get() == usize::MAX {
+            s.set(NEXT.fetch_add(1, Ordering::Relaxed) % SIGNAL_SHARDS);
+        }
+        s.get()
+    })
 }
 
 impl Default for MemorySignals {
@@ -226,22 +247,30 @@ impl Default for MemorySignals {
 }
 
 impl MemorySignals {
-    /// Keep at most `cap` signals; the oldest go first.
+    /// Keep about the last `cap` signals; the oldest go first.
     #[must_use]
     pub fn new(cap: usize) -> Self {
         Self {
             cap: cap.max(1),
-            log: Mutex::new(std::collections::VecDeque::new()),
+            seq: AtomicU64::new(0),
+            shards: (0..SIGNAL_SHARDS)
+                .map(|_| Mutex::new(std::collections::VecDeque::new()))
+                .collect(),
         }
     }
 
-    /// A copy of what is kept, oldest first.
+    /// A copy of the last `cap` signals, oldest first.
     #[must_use]
     pub fn snapshot(&self) -> Vec<Signal> {
-        self.log
-            .lock()
-            .map(|l| l.iter().copied().collect())
-            .unwrap_or_default()
+        let mut all: Vec<(u64, Signal)> = self
+            .shards
+            .iter()
+            .filter_map(|s| s.lock().ok().map(|l| l.iter().copied().collect::<Vec<_>>()))
+            .flatten()
+            .collect();
+        all.sort_by_key(|(n, _)| *n);
+        let skip = all.len().saturating_sub(self.cap);
+        all.into_iter().skip(skip).map(|(_, s)| s).collect()
     }
 
     /// The kinds kept, oldest first.
@@ -252,19 +281,22 @@ impl MemorySignals {
 
     /// Forget everything.
     pub fn clear(&self) {
-        if let Ok(mut l) = self.log.lock() {
-            l.clear();
+        for s in &self.shards {
+            if let Ok(mut l) = s.lock() {
+                l.clear();
+            }
         }
     }
 }
 
 impl SignalSink for MemorySignals {
     fn signal(&self, signal: &Signal) {
-        if let Ok(mut l) = self.log.lock() {
+        let n = self.seq.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut l) = self.shards[shard_of_thread()].lock() {
             if l.len() == self.cap {
                 l.pop_front();
             }
-            l.push_back(*signal);
+            l.push_back((n, *signal));
         }
     }
 }

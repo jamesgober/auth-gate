@@ -82,12 +82,7 @@ impl fmt::Debug for Bindings {
 }
 
 impl Bindings {
-    pub(crate) fn compute(
-        key: &[u8; 32],
-        user: UserId,
-        peer: Option<IpAddr>,
-        agent: Option<&[u8]>,
-    ) -> Self {
+    fn network(peer: Option<IpAddr>) -> [u8; 7] {
         let mut prefix = [0u8; 7];
         match peer {
             Some(IpAddr::V4(v4)) => {
@@ -106,6 +101,23 @@ impl Bindings {
             },
             None => {}
         }
+        prefix
+    }
+
+    /// Whether `peer` is in the network this binding recorded (cheap: no
+    /// hashing).
+    #[must_use]
+    pub fn network_is(&self, peer: Option<IpAddr>) -> bool {
+        self.prefix == Self::network(peer)
+    }
+
+    pub(crate) fn compute(
+        key: &[u8; 32],
+        user: UserId,
+        peer: Option<IpAddr>,
+        agent: Option<&[u8]>,
+    ) -> Self {
+        let prefix = Self::network(peer);
         let mut h = mac::Blake3Mac::new(key);
         h.update(&user.to_bytes());
         h.update(agent.unwrap_or(b""));

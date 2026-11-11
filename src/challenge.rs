@@ -93,12 +93,7 @@ pub(crate) fn open(keys: &GateKeys, raw: &[u8], purpose: Purpose, now: UnixTime)
     if raw.len() != RAW_LEN || raw[0] != purpose as u8 {
         return None;
     }
-    let want = tag(keys, &raw[..41]);
-    let mut diff = 0u8;
-    for (a, b) in want.iter().zip(&raw[41..]) {
-        diff |= a ^ b;
-    }
-    if diff != 0 {
+    if !crypt_io::Tag::new(tag(keys, &raw[..41])).ct_eq(&raw[41..]) {
         return None;
     }
     let mut e = [0u8; 8];
@@ -115,6 +110,15 @@ pub(crate) fn open(keys: &GateKeys, raw: &[u8], purpose: Purpose, now: UnixTime)
         expires,
         once_key: mac::blake3_keyed(&keys.challenge, &raw[25..41]),
     })
+}
+
+/// The single-use key for code attempt `i` on a challenge.
+pub(crate) fn attempt_key(keys: &GateKeys, once_key: &[u8; 32], i: u8) -> [u8; 32] {
+    let mut h = mac::Blake3Mac::new(&keys.challenge);
+    h.update(b"attempt");
+    h.update(once_key);
+    h.update(&[i]);
+    h.finalize()
 }
 
 /// Decode a challenge's text form.

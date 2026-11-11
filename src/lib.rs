@@ -105,9 +105,9 @@ pub use crate::{
     challenge::Challenge,
     error::{AuthError, StoreError},
     gate::{
-        AuthGate, AuthGateBuilder, Authentication, CHALLENGE_TTL, ClientChange, FAILURE_MESSAGE,
-        Failure, FailureReason, Guest, Issued, LockoutPolicy, Member, Presented, Refusal,
-        SessionPolicy, SignIn, Verified,
+        AuthGate, AuthGateBuilder, Authentication, CHALLENGE_TTL, CODE_ATTEMPTS, ClientChange,
+        FAILURE_MESSAGE, Failure, FailureReason, Guest, Issued, LockoutPolicy, Member, Presented,
+        Refusal, SessionPolicy, SignIn, Verified,
     },
     id::{Identifier, MAX_IDENTIFIER_LEN, SessionId, UserId},
     keys::{GateKeys, KeyRole, MIN_MASTER_LEN, TokenKeys},

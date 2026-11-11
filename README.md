@@ -28,7 +28,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>.
     </p>
     <blockquote>
-        <strong>Status: <code>0.3.0</code>, pre-release.</strong> Built and tested locally; not yet published. The API may still change before 1.0.
+        <strong>Status: <code>0.4.0</code>, pre-release.</strong> Built and tested locally; not yet published. The API may still change before 1.0.
     </blockquote>
 </div>
 
@@ -39,7 +39,7 @@
 
 ```toml
 [dependencies]
-auth-gate = "0.3"
+auth-gate = "0.4"
 ```
 
 On Windows without NASM, set `AWS_LC_SYS_PREBUILT_NASM=1` or enable the `prebuilt-nasm` feature (crypt-io's OTP and signature checks use AWS-LC).
@@ -79,8 +79,8 @@ match gate.authenticate(&client.token(cookie_value)) {
 | a stolen session table | only keyed digests are stored |
 | a replayed stolen cookie | ended sessions leave tombstones: a stale tab and a replay from another client are told apart |
 | session fixation | every sign-in issues a new token and ends the one presented |
-| account enumeration | one message and the same Argon2id work for every failure |
-| password guessing | failures counted per account; a timed lock that leaves signed-in sessions alone |
+| account enumeration | one message, the same Argon2id work, and the same store work (one read, one write) for every failure |
+| password and code guessing | password failures and wrong second-factor codes counted together per account, never reset until the whole sign-in passes; at most 3 codes per prompt; a timed lock kept beside the standing (it never replaces a ban or a suspension) that leaves signed-in sessions alone |
 | replayed codes and challenges | each TOTP step, recovery code, and challenge works once, across nodes sharing a store |
 | cloned passkeys | the signature counter must increase |
 | bans and suspensions | a ban ends every session at once; a standing re-read every few minutes and when a timed standing lifts |

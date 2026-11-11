@@ -112,6 +112,7 @@ pub struct GateKeys {
     pub(crate) recovery: Key,
     csrf: Key,
     factor: Key,
+    audit: Key,
 }
 
 fn derive_one(master: &[u8], label: &str) -> Result<Key, AuthError> {
@@ -144,6 +145,7 @@ impl GateKeys {
             recovery: derive_one(master, "recovery code digest")?,
             csrf: derive_one(master, "csrf")?,
             factor: derive_one(master, "factor secrets at rest")?,
+            audit: derive_one(master, "audit chain")?,
         })
     }
 
@@ -158,6 +160,13 @@ impl GateKeys {
     #[must_use]
     pub fn csrf_key(&self) -> [u8; 32] {
         *self.csrf
+    }
+
+    /// The key that keys the audit chain's hash (derived under its own
+    /// label: holding the CSRF key does not let anyone rebuild the chain).
+    #[must_use]
+    pub fn audit_key(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(*self.audit)
     }
 
     /// A key for sealing second-factor secrets at rest, for store

@@ -129,19 +129,11 @@ pub fn check(keys: &GateKeys, presented: &[u8]) -> TokenCheck {
     let Some((role, key)) = keys.tokens.find(raw[1]) else {
         return TokenCheck::UnknownKey;
     };
-    if !ct_eq16(&tag(key, &raw[..34]), &raw[34..]) {
+    if !crypt_io::Tag::new(tag(key, &raw[..34])).ct_eq(&raw[34..]) {
         return TokenCheck::BadSignature;
     }
     if role == KeyRole::Retired {
         return TokenCheck::RetiredKey;
     }
     TokenCheck::Valid(digest(keys, &raw[2..34]))
-}
-
-fn ct_eq16(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0 && a.len() == b.len()
 }

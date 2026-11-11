@@ -103,7 +103,9 @@ impl fmt::Display for SessionId {
 /// What a person signs in with: an email address or a user name.
 ///
 /// Trimmed of surrounding whitespace and ASCII-lowercased, so `Alice@Example.com `
-/// and `alice@example.com` find the same account. At most 254 bytes.
+/// and `alice@example.com` find the same account. At most 254 bytes of
+/// printable ASCII: no spaces inside, and no letters from other scripts
+/// until Unicode normalization ships (they could imitate another account).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Identifier(Box<str>);
 
@@ -116,10 +118,14 @@ impl Identifier {
     /// # Errors
     ///
     /// [`AuthError::InvalidInput`] when it is empty after trimming, longer
-    /// than 254 bytes, or holds a control character.
+    /// than 254 bytes, or holds anything but printable ASCII.
     pub fn new(raw: &str) -> Result<Self, AuthError> {
         let t = raw.trim();
-        if t.is_empty() || t.len() > MAX_IDENTIFIER_LEN || t.chars().any(char::is_control) {
+        // Printable ASCII only until Unicode normalization ships: look-alike
+        // letters from other scripts and differently composed accents would
+        // otherwise be distinct accounts.
+        if t.is_empty() || t.len() > MAX_IDENTIFIER_LEN || !t.bytes().all(|b| b.is_ascii_graphic())
+        {
             return Err(AuthError::InvalidInput("identifier"));
         }
         Ok(Self(t.to_ascii_lowercase().into_boxed_str()))

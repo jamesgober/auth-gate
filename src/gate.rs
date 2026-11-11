@@ -46,20 +46,30 @@ impl Default for SessionPolicy {
             absolute: Duration::from_secs(12 * 3600),
             recheck: Duration::from_secs(5 * 60),
             touch: Duration::from_secs(60),
-            client_change: ClientChange::Signal,
+            client_change: ClientChange::EndWhenBoth,
         }
     }
 }
 
 /// What a session does when its client's network prefix or browser changes.
+/// Every change is reported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ClientChange {
-    /// Report it and carry on (mobile networks change prefix often).
-    #[default]
+    /// Carry on (mobile networks change prefix often).
     Signal,
-    /// Report it and end the session.
+    /// End the session when both the network and the browser changed (a
+    /// copied cookie on another machine); carry on when only one did. The
+    /// default.
+    #[default]
+    EndWhenBoth,
+    /// End the session on any change.
     EndSession,
 }
+
+/// Wrong codes one second-factor prompt accepts before it stops working
+/// (the user signs in with the password again, and every wrong code also
+/// counts toward the account lock).
+pub const CODE_ATTEMPTS: u8 = 3;
 
 /// Automatic locking after failed sign-ins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -630,27 +640,39 @@ impl AuthGate {
             });
         }
 
-        // The client: report a change once, then follow it.
-        let here = self.bindings(rec.user, p);
-        if !here.same_client(&rec.bindings) {
-            self.report(
-                SignalKind::ClientChanged,
-                50,
-                p,
-                Some(rec.user),
-                Some(rec.id),
-                now,
-            );
-            if self.session.client_change == ClientChange::EndSession {
-                let _ = self.sessions.end(&digest, EndReason::Revoked, now);
-                return Authentication::Guest(Guest::Invalid(SignalKind::ClientChanged));
+        // The client: the network prefix on every request; the keyed
+        // browser hash when the prefix moved or at the touch interval.
+        // Report a change once, then follow it.
+        let touch_due = now.since(rec.last_seen) >= duration_ms(self.session.touch);
+        let network_moved = !rec.bindings.network_is(p.peer);
+        if network_moved || touch_due {
+            let here = self.bindings(rec.user, p);
+            let agent_moved = !here.same_agent(&rec.bindings);
+            if network_moved || agent_moved {
+                self.report(
+                    SignalKind::ClientChanged,
+                    50,
+                    p,
+                    Some(rec.user),
+                    Some(rec.id),
+                    now,
+                );
+                let end = match self.session.client_change {
+                    ClientChange::Signal => false,
+                    ClientChange::EndWhenBoth => network_moved && agent_moved,
+                    ClientChange::EndSession => true,
+                };
+                if end {
+                    let _ = self.sessions.end(&digest, EndReason::Revoked, now);
+                    return Authentication::Guest(Guest::Invalid(SignalKind::ClientChanged));
+                }
+                rec.bindings = here;
+                changed = true;
             }
-            rec.bindings = here;
-            changed = true;
         }
 
         // Activity, at most once per touch interval.
-        if now.since(rec.last_seen) >= duration_ms(self.session.touch) {
+        if touch_due {
             rec.last_seen = now;
             rec.idle_until = (now + self.session.idle).min(rec.absolute_until);
             changed = true;
@@ -685,18 +707,18 @@ impl AuthGate {
             let _ = self.hasher.dummy_check();
             return failed(FailureReason::InvalidInput);
         };
-        let user = match self.identities.lookup(&id) {
-            Ok(u) => u,
-            Err(_) => return failed(FailureReason::Unavailable),
-        };
-        let account = match user.map(|u| self.identities.account(u)) {
-            Some(Ok(Some(a))) => a,
-            Some(Err(_)) => return failed(FailureReason::Unavailable),
-            _ => {
+        // One read and, on failure, one write, whether or not the account
+        // exists: the store work does not tell them apart.
+        let account = match self.identities.account_by_identifier(&id) {
+            Ok(Some(a)) => a,
+            Ok(None) => {
                 let _ = self.hasher.dummy_check();
                 self.report(SignalKind::SignInUnknown, 50, p, None, None, now);
+                let window = duration_ms(self.lockout.window);
+                let _ = self.identities.record_unknown_failure(&id, now, window);
                 return failed(FailureReason::UnknownAccount);
             }
+            Err(_) => return failed(FailureReason::Unavailable),
         };
         let Some(hash) = account.password.clone() else {
             let _ = self.hasher.dummy_check();
@@ -705,7 +727,7 @@ impl AuthGate {
         // The hash is checked even for blocked accounts, so timing does not
         // tell a blocked account from a wrong password.
         let ok = self.hasher.check(&hash, password.as_bytes());
-        if account.standing.blocks_sign_in(now) {
+        if blocked(&account, now) {
             self.report(
                 SignalKind::SignInBlocked,
                 90,
@@ -714,10 +736,10 @@ impl AuthGate {
                 None,
                 now,
             );
-            let reason = if matches!(account.standing.at(now), Standing::Locked { .. }) {
-                FailureReason::Locked
-            } else {
+            let reason = if account.standing.ends_sessions(now) {
                 FailureReason::Banned
+            } else {
+                FailureReason::Locked
             };
             return failed(reason);
         }
@@ -725,7 +747,6 @@ impl AuthGate {
             self.count_failure(&account, p, now, SignalKind::SignInFailed);
             return failed(FailureReason::WrongPassword);
         }
-        let _ = self.identities.clear_failures(account.user);
         if self.hasher.needs_rehash(&hash) {
             if let Ok(new) = self.hasher.hash(password) {
                 let _ = self.identities.set_password(account.user, new);
@@ -738,17 +759,12 @@ impl AuthGate {
         self.report(kind, 70, p, Some(account.user), None, now);
         let window = duration_ms(self.lockout.window);
         if let Ok(n) = self.identities.record_failure(account.user, now, window) {
-            // Only an active account is locked: a lock replaces the standing
-            // and lifts to active, so locking a pending or suspended account
-            // would erase its standing when the lock ends (a way to skip
-            // verification). Their failures are still counted and reported.
-            if n >= self.lockout.failures && matches!(account.standing.at(now), Standing::Active) {
+            // Every account can be locked, whatever its standing: the lock
+            // is kept apart from the standing, so it never replaces one (a
+            // ban that lands meanwhile stays a ban).
+            if n >= self.lockout.failures {
                 let until = now + self.lockout.lock_for;
-                if self
-                    .identities
-                    .set_standing(account.user, Standing::Locked { until })
-                    .is_ok()
-                {
+                if self.identities.lock_until(account.user, until).is_ok() {
                     self.report(
                         SignalKind::AccountLocked,
                         90,
@@ -765,6 +781,9 @@ impl AuthGate {
     fn after_first_factor(&self, account: &Account, now: UnixTime) -> SignIn {
         let wants_second = account.totp.as_ref().is_some_and(|t| t.confirmed);
         if !wants_second {
+            // The whole sign-in passed: only now are failures forgotten. With
+            // a second factor still owed, they stay counted.
+            let _ = self.identities.clear_failures(account.user);
             return SignIn::Verified(Verified {
                 user: account.user,
                 factor_at: None,
@@ -801,34 +820,45 @@ impl AuthGate {
             Ok(None) => return failed(FailureReason::UnknownAccount),
             Err(_) => return failed(FailureReason::Unavailable),
         };
-        if account.standing.blocks_sign_in(now) {
+        if blocked(&account, now) {
             return failed(FailureReason::Banned);
         }
-        let accepted = if otp::is_recovery_shape(code) {
-            otp::recovery_digest(&self.keys, code)
-                .map(|d| self.identities.use_recovery_code(user, &d))
+        // A prompt accepts at most CODE_ATTEMPTS codes, across every node
+        // that shares the session store.
+        let claimed = (0..CODE_ATTEMPTS).try_fold(false, |done, i| {
+            if done {
+                return Ok(true);
+            }
+            self.sessions.use_once(
+                challenge::attempt_key(&self.keys, &opened.once_key, i),
+                opened.expires,
+            )
+        });
+        match claimed {
+            Ok(true) => {}
+            Ok(false) => {
+                self.report(SignalKind::FactorFailed, 80, p, Some(user), None, now);
+                return failed(FailureReason::Challenge);
+            }
+            Err(_) => return failed(FailureReason::Unavailable),
+        }
+        let recovery = otp::is_recovery_shape(code);
+        let step = if recovery {
+            None
         } else {
-            account
+            let step = account
                 .totp
                 .as_ref()
-                .and_then(|t| otp::totp_check(&t.secret, code, now))
-                .map(|step| match self.identities.advance_totp(user, step) {
-                    Ok(true) => Ok(true),
-                    Ok(false) => {
-                        self.report(SignalKind::FactorReplayed, 80, p, Some(user), None, now);
-                        Ok(false)
-                    }
-                    Err(e) => Err(e),
-                })
-        };
-        match accepted {
-            Some(Ok(true)) => {}
-            Some(Err(_)) => return failed(FailureReason::Unavailable),
-            _ => {
+                .filter(|t| t.confirmed)
+                .and_then(|t| otp::totp_check(&t.secret, code, now));
+            if step.is_none() {
                 self.count_failure(&account, p, now, SignalKind::FactorFailed);
                 return failed(FailureReason::WrongCode);
             }
-        }
+            step
+        };
+        // The challenge is consumed before any code is: a replayed challenge
+        // never burns a fresh code.
         match self.sessions.use_once(opened.once_key, opened.expires) {
             Ok(true) => {}
             Ok(false) => {
@@ -836,6 +866,27 @@ impl AuthGate {
                 return failed(FailureReason::Replayed);
             }
             Err(_) => return failed(FailureReason::Unavailable),
+        }
+        let accepted = match step {
+            Some(step) => match self.identities.advance_totp(user, step) {
+                Ok(true) => true,
+                Ok(false) => {
+                    self.report(SignalKind::FactorReplayed, 80, p, Some(user), None, now);
+                    false
+                }
+                Err(_) => return failed(FailureReason::Unavailable),
+            },
+            None => match otp::recovery_digest(&self.keys, code)
+                .map(|d| self.identities.use_recovery_code(user, &d))
+            {
+                Some(Ok(true)) => true,
+                Some(Err(_)) => return failed(FailureReason::Unavailable),
+                _ => false,
+            },
+        };
+        if !accepted {
+            self.count_failure(&account, p, now, SignalKind::FactorFailed);
+            return failed(FailureReason::WrongCode);
         }
         let _ = self.identities.clear_failures(user);
         SignIn::Verified(Verified {
@@ -1007,23 +1058,36 @@ impl AuthGate {
 
     // ------------------------------------------------------------ factors
 
-    /// Start TOTP enrolment: a new secret, stored unconfirmed. Show
-    /// [`TotpSecret::uri`] as a QR code, then [`confirm_totp`](Self::confirm_totp)
-    /// with the first code. Sign-in asks for codes only once confirmed.
+    /// Start TOTP enrolment: a new secret. Show [`TotpSecret::uri`] as a QR
+    /// code, then [`confirm_totp`](Self::confirm_totp) with the first code.
+    /// Sign-in asks for codes only once a secret is confirmed. Enrolling
+    /// again (a new phone) keeps the confirmed secret working until the new
+    /// one is confirmed, so an abandoned enrolment never turns the second
+    /// factor off.
     ///
     /// # Errors
     ///
     /// [`AuthError`].
     pub fn enroll_totp(&self, user: UserId) -> Result<TotpSecret, AuthError> {
         let secret = TotpSecret::generate()?;
-        self.identities.set_totp(
-            user,
-            Some(TotpState {
+        let current = self
+            .identities
+            .account(user)?
+            .ok_or(AuthError::Store(StoreError::NotFound))?
+            .totp;
+        let state = match current {
+            Some(t) if t.confirmed => TotpState {
+                pending: Some(secret.clone()),
+                ..t
+            },
+            _ => TotpState {
                 secret: secret.clone(),
                 last_step: 0,
                 confirmed: false,
-            }),
-        )?;
+                pending: None,
+            },
+        };
+        self.identities.set_totp(user, Some(state))?;
         Ok(secret)
     }
 
@@ -1037,11 +1101,26 @@ impl AuthGate {
         let Some(account) = self.identities.account(user)? else {
             return Ok(false);
         };
-        let Some(step) = account
-            .totp
-            .as_ref()
-            .and_then(|t| otp::totp_check(&t.secret, code, now))
-        else {
+        let Some(totp) = account.totp else {
+            return Ok(false);
+        };
+        if let Some(pending) = totp.pending {
+            // Replacing a confirmed secret: swap only on a code from the new one.
+            let Some(step) = otp::totp_check(&pending, code, now) else {
+                return Ok(false);
+            };
+            self.identities.set_totp(
+                user,
+                Some(TotpState {
+                    secret: pending,
+                    last_step: step,
+                    confirmed: true,
+                    pending: None,
+                }),
+            )?;
+            return Ok(true);
+        }
+        let Some(step) = otp::totp_check(&totp.secret, code, now) else {
             return Ok(false);
         };
         Ok(self.identities.advance_totp(user, step)?)
@@ -1121,6 +1200,15 @@ impl AuthGate {
             .map_err(|_| PasskeyError::UnknownCredential)
     }
 
+    /// Remove a passkey from an account.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::Store`].
+    pub fn remove_passkey(&self, user: UserId, credential: &[u8]) -> Result<bool, AuthError> {
+        Ok(self.identities.remove_passkey(user, credential)?)
+    }
+
     /// A challenge for `navigator.credentials.get` (its bytes).
     ///
     /// # Errors
@@ -1194,11 +1282,17 @@ impl AuthGate {
             Ok(false) => return fail(PasskeyError::CounterRegressed, Some(user)),
             Err(_) => return failed(FailureReason::Unavailable),
         }
-        match self.identities.standing(user) {
-            Ok(Some(s)) if !s.blocks_sign_in(now) => SignIn::Verified(Verified {
-                user,
-                factor_at: Some(now),
-            }),
+        // Without user verification a passkey is one factor (possession):
+        // it signs in, but proves no second factor for step-up rules.
+        let verified_user = data.flags & crate::webauthn::FLAG_UV != 0;
+        match self.identities.account(user) {
+            Ok(Some(a)) if !blocked(&a, now) => {
+                let _ = self.identities.clear_failures(user);
+                SignIn::Verified(Verified {
+                    user,
+                    factor_at: verified_user.then_some(now),
+                })
+            }
             Ok(_) => {
                 self.report(SignalKind::SignInBlocked, 90, p, Some(user), None, now);
                 failed(FailureReason::Banned)
@@ -1211,6 +1305,12 @@ impl AuthGate {
     pub fn purge(&self) -> usize {
         self.sessions.purge(self.clock.now())
     }
+}
+
+/// Whether `account` may not sign in at `now`: its standing refuses it, or
+/// it is locked after failed sign-ins.
+fn blocked(account: &Account, now: UnixTime) -> bool {
+    account.standing.blocks_sign_in(now) || account.locked_until.is_some_and(|t| now < t)
 }
 
 fn duration_ms(d: Duration) -> u64 {

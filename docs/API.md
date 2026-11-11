@@ -20,7 +20,7 @@ Everything is re-exported at the crate root; `webauthn` holds the WebAuthn parse
 
 ## Stores
 
-`IdentityStore` (`lookup`, `account`, `standing`, `create`, `set_standing`, `set_password`, `set_roles`, `record_failure`, `clear_failures`, `set_totp`, `advance_totp`, `set_recovery_codes`, `use_recovery_code`, `add_passkey`, `passkey`, `passkeys`, `advance_sign_count`, `remove_passkey`) and `SessionStore` (`find`, `insert`, `update`, `end`, `end_all`, `sessions_of`, `use_once`, `purge`); `MemoryIdentities` and `MemorySessions` implement them.
+`IdentityStore` (`lookup`, `account_by_identifier` (one read; adapters must not do two), `account`, `standing`, `create`, `set_standing`, `set_password`, `set_roles`, `record_failure`, `record_unknown_failure`, `lock_until`, `clear_failures`, `set_totp`, `advance_totp`, `set_recovery_codes`, `use_recovery_code`, `add_passkey`, `passkey`, `passkeys`, `advance_sign_count`, `remove_passkey`) and `SessionStore` (`find`, `insert`, `update`, `end`, `end_all`, `sessions_of`, `use_once`, `purge`); `MemoryIdentities` and `MemorySessions` implement them.
 
 ## Types
 
