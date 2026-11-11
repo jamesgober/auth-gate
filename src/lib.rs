@@ -97,6 +97,7 @@ mod record;
 mod signal;
 mod standing;
 mod store;
+mod sync;
 mod time;
 mod token;
 pub mod webauthn;

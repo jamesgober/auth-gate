@@ -65,6 +65,18 @@ jobs:
             cargo fuzz run "$target" -O --target x86_64-unknown-linux-gnu -- -max_total_time=30
           done
 
+  loom:
+    name: Loom (session store model)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "--cfg loom"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Model check
+        run: cargo test --release --test loom
+
   security:
     name: Security (audit + deny)
     runs-on: ubuntu-latest

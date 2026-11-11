@@ -11,6 +11,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- A loom model of `MemorySessions` (`tests/loom.rs`, run with
+  `RUSTFLAGS="--cfg loom"`): issuing a session against ending every session
+  of the account, racing sign-ins past the per-account cap, and ending one
+  session against ending all.
+
 ---
 
 ## [0.4.0] - 2026-11-11
@@ -54,8 +61,21 @@ Hardening fixes.
 - `GateKeys::audit_key`, `AuthGate::remove_passkey`, `CODE_ATTEMPTS`,
   `Bindings::network_is`, `MemorySessions::entries`.
 
-Breaking for store adapters: three new `IdentityStore` methods and new
-fields on `Account` and `TotpState`.
+### Migrating from 0.3
+
+- **Store adapters** implement three new `IdentityStore` methods:
+  `record_unknown_failure` (count a failed sign-in for an identifier with
+  no account, in one write), `lock_until` (set `Account::locked_until`,
+  never the standing), and preferably `account_by_identifier` (the default
+  reads twice; answer in one round trip so known and unknown identifiers
+  cost the same). Fill the new fields `Account::locked_until` and
+  `TotpState::pending` (`None` when there is nothing).
+- Code that matched `Standing::Locked` to detect a lock reads
+  `Account::locked_until` instead; the gate no longer writes `Locked`.
+- Identifiers are printable ASCII only: an account created with any other
+  character no longer signs in under 0.4 (it was never normalized).
+- The default `ClientChange` is now `EndWhenBoth`; set `Signal` to keep the
+  old behaviour.
 
 See [`docs/release/v0.4.0.md`](./docs/release/v0.4.0.md).
 

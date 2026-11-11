@@ -1,10 +1,7 @@
 //! In-memory stores: correct, bounded, and lost on restart. For tests,
 //! local development, and as the memory tier in front of a durable store.
 
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Mutex, RwLock},
-};
+use std::collections::{HashMap, VecDeque};
 
 use crate::{
     error::StoreError,
@@ -15,6 +12,7 @@ use crate::{
     record::{EndReason, SessionInfo, SessionRecord, Tombstone},
     standing::Standing,
     store::{Account, Found, IdentityStore, NewAccount, SessionStore, TotpState},
+    sync::{Mutex, RwLock},
     time::UnixTime,
     token::TokenDigest,
 };
