@@ -28,3 +28,5 @@ auth-gate is authentication: signed opaque session tokens, Argon2id passwords, T
 | D-016 | 2026-11-11 | One store read for sign-in (`account_by_identifier`) and one write on any failure (`record_unknown_failure` for unknown identifiers) | equal store work, not only equal Argon2 work |
 | D-017 | 2026-11-11 | Identifiers are printable ASCII only until normalization ships | look-alike scripts and NFC/NFD forms were distinct accounts |
 | D-018 | 2026-11-11 | Default `ClientChange::EndWhenBoth`; browser hash at the touch interval | the per-request cost of the binding hash |
+| D-019 | 2026-11-11 | Count each attempt before checking it; refuse unchecked past the threshold | concurrent attempts got more checks than the lockout allows; the store's increment is now the gate, and blocked accounts write like unknown ones |
+| D-020 | 2026-11-11 | `account_by_identifier` required; `use_once` takes `now` and evicts expired values when full | equal store work cannot depend on an adapter overriding a default; a full map refused sign-ins until a purge |

@@ -28,7 +28,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>.
     </p>
     <blockquote>
-        <strong>Status: <code>0.4.0</code>, pre-release.</strong> Built and tested locally; not yet published. The API may still change before 1.0.
+        <strong>Status: <code>0.5.0</code>, pre-release.</strong> Published on crates.io. The API may still change before 1.0.
     </blockquote>
 </div>
 
@@ -39,7 +39,7 @@
 
 ```toml
 [dependencies]
-auth-gate = "0.4"
+auth-gate = "0.5"
 ```
 
 On Windows without NASM, set `AWS_LC_SYS_PREBUILT_NASM=1` or enable the `prebuilt-nasm` feature (crypt-io's OTP and signature checks use AWS-LC).

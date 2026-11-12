@@ -720,6 +720,17 @@ impl AuthGate {
             }
             Err(_) => return failed(FailureReason::Unavailable),
         };
+        // Count the attempt before checking it: the store's own atomic
+        // increment is the gate, so requests in flight together cannot all
+        // pass the threshold, and every known account gets one write, as an
+        // unknown identifier does.
+        let attempt = match self.attempt(&account, p, now) {
+            Ok(a) => a,
+            Err(_) => {
+                let _ = self.hasher.dummy_check();
+                return failed(FailureReason::Unavailable);
+            }
+        };
         let Some(hash) = account.password.clone() else {
             let _ = self.hasher.dummy_check();
             return failed(FailureReason::NoPassword);
@@ -727,7 +738,7 @@ impl AuthGate {
         // The hash is checked even for blocked accounts, so timing does not
         // tell a blocked account from a wrong password.
         let ok = self.hasher.check(&hash, password.as_bytes());
-        if blocked(&account, now) {
+        if blocked(&account, now) || attempt == Attempt::OverLimit {
             self.report(
                 SignalKind::SignInBlocked,
                 90,
@@ -744,7 +755,7 @@ impl AuthGate {
             return failed(reason);
         }
         if !ok {
-            self.count_failure(&account, p, now, SignalKind::SignInFailed);
+            self.failed_attempt(&account, attempt, p, now, SignalKind::SignInFailed);
             return failed(FailureReason::WrongPassword);
         }
         if self.hasher.needs_rehash(&hash) {
@@ -755,26 +766,61 @@ impl AuthGate {
         self.after_first_factor(&account, now)
     }
 
-    fn count_failure(&self, account: &Account, p: &Presented<'_>, now: UnixTime, kind: SignalKind) {
-        self.report(kind, 70, p, Some(account.user), None, now);
+    /// Record a sign-in attempt for `account` before it is checked, and say
+    /// whether it is still within the limit. Over the limit, the account is
+    /// locked (if it is not already) and the attempt is refused unchecked.
+    fn attempt(
+        &self,
+        account: &Account,
+        p: &Presented<'_>,
+        now: UnixTime,
+    ) -> Result<Attempt, StoreError> {
         let window = duration_ms(self.lockout.window);
-        if let Ok(n) = self.identities.record_failure(account.user, now, window) {
-            // Every account can be locked, whatever its standing: the lock
-            // is kept apart from the standing, so it never replaces one (a
-            // ban that lands meanwhile stays a ban).
-            if n >= self.lockout.failures {
-                let until = now + self.lockout.lock_for;
-                if self.identities.lock_until(account.user, until).is_ok() {
-                    self.report(
-                        SignalKind::AccountLocked,
-                        90,
-                        p,
-                        Some(account.user),
-                        None,
-                        now,
-                    );
-                }
-            }
+        let n = self.identities.record_failure(account.user, now, window)?;
+        if n > self.lockout.failures {
+            self.lock(account, p, now);
+            return Ok(Attempt::OverLimit);
+        }
+        Ok(if n == self.lockout.failures {
+            Attempt::Last
+        } else {
+            Attempt::Within
+        })
+    }
+
+    /// An attempt checked and found wrong: report it, and lock the account
+    /// when it was the last one allowed.
+    fn failed_attempt(
+        &self,
+        account: &Account,
+        attempt: Attempt,
+        p: &Presented<'_>,
+        now: UnixTime,
+        kind: SignalKind,
+    ) {
+        self.report(kind, 70, p, Some(account.user), None, now);
+        if attempt != Attempt::Within {
+            self.lock(account, p, now);
+        }
+    }
+
+    /// Lock the account for the lockout period. The lock is kept apart from
+    /// the standing, so it never replaces one (a ban that lands meanwhile
+    /// stays a ban).
+    fn lock(&self, account: &Account, p: &Presented<'_>, now: UnixTime) {
+        if account.locked_until.is_some_and(|t| now < t) {
+            return;
+        }
+        let until = now + self.lockout.lock_for;
+        if self.identities.lock_until(account.user, until).is_ok() {
+            self.report(
+                SignalKind::AccountLocked,
+                90,
+                p,
+                Some(account.user),
+                None,
+                now,
+            );
         }
     }
 
@@ -832,6 +878,7 @@ impl AuthGate {
             self.sessions.use_once(
                 challenge::attempt_key(&self.keys, &opened.once_key, i),
                 opened.expires,
+                now,
             )
         });
         match claimed {
@@ -842,6 +889,12 @@ impl AuthGate {
             }
             Err(_) => return failed(FailureReason::Unavailable),
         }
+        // Counted before it is checked, as on the password step.
+        let attempt = match self.attempt(&account, p, now) {
+            Ok(Attempt::OverLimit) => return failed(FailureReason::Locked),
+            Ok(a) => a,
+            Err(_) => return failed(FailureReason::Unavailable),
+        };
         let recovery = otp::is_recovery_shape(code);
         let step = if recovery {
             None
@@ -852,14 +905,14 @@ impl AuthGate {
                 .filter(|t| t.confirmed)
                 .and_then(|t| otp::totp_check(&t.secret, code, now));
             if step.is_none() {
-                self.count_failure(&account, p, now, SignalKind::FactorFailed);
+                self.failed_attempt(&account, attempt, p, now, SignalKind::FactorFailed);
                 return failed(FailureReason::WrongCode);
             }
             step
         };
         // The challenge is consumed before any code is: a replayed challenge
         // never burns a fresh code.
-        match self.sessions.use_once(opened.once_key, opened.expires) {
+        match self.sessions.use_once(opened.once_key, opened.expires, now) {
             Ok(true) => {}
             Ok(false) => {
                 self.report(SignalKind::FactorReplayed, 90, p, Some(user), None, now);
@@ -885,7 +938,7 @@ impl AuthGate {
             },
         };
         if !accepted {
-            self.count_failure(&account, p, now, SignalKind::FactorFailed);
+            self.failed_attempt(&account, attempt, p, now, SignalKind::FactorFailed);
             return failed(FailureReason::WrongCode);
         }
         let _ = self.identities.clear_failures(user);
@@ -1191,7 +1244,7 @@ impl AuthGate {
         }
         let data = passkey::check_authenticator(rp, authenticator_data)?;
         let key = passkey::registered(&data, now)?;
-        match self.sessions.use_once(opened.once_key, opened.expires) {
+        match self.sessions.use_once(opened.once_key, opened.expires, now) {
             Ok(true) => {}
             _ => return Err(PasskeyError::Challenge),
         }
@@ -1269,7 +1322,7 @@ impl AuthGate {
         {
             return fail(e, Some(user));
         }
-        match self.sessions.use_once(opened.once_key, opened.expires) {
+        match self.sessions.use_once(opened.once_key, opened.expires, now) {
             Ok(true) => {}
             Ok(false) => return fail(PasskeyError::Challenge, Some(user)),
             Err(_) => return failed(FailureReason::Unavailable),
@@ -1305,6 +1358,17 @@ impl AuthGate {
     pub fn purge(&self) -> usize {
         self.sessions.purge(self.clock.now())
     }
+}
+
+/// Where a counted sign-in attempt stands against the lockout threshold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Attempt {
+    /// Below the threshold.
+    Within,
+    /// The last attempt allowed: a wrong one locks the account.
+    Last,
+    /// Past the threshold: refused without being checked.
+    OverLimit,
 }
 
 /// Whether `account` may not sign in at `now`: its standing refuses it, or

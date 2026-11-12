@@ -85,12 +85,13 @@ pub trait SessionStore: Send + Sync {
     /// Record that the single-use value `key` was used, remembering it until
     /// `until`. Returns `true` the first time and `false` on every later
     /// call: the replay guard for second-factor and passkey challenges,
-    /// shared by every node that shares the store.
+    /// shared by every node that shares the store. `now` lets a full store
+    /// forget values that expired, rather than refusing new ones.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; the gate then refuses the challenge.
-    fn use_once(&self, key: [u8; 32], until: UnixTime) -> Result<bool, StoreError>;
+    fn use_once(&self, key: [u8; 32], until: UnixTime, now: UnixTime) -> Result<bool, StoreError>;
 
     /// Drop expired sessions, old tombstones, and spent single-use values.
     /// Returns how many entries went. Called from a timer, never per request.
@@ -168,24 +169,16 @@ pub trait IdentityStore: Send + Sync {
     /// [`StoreError`].
     fn lookup(&self, identifier: &Identifier) -> Result<Option<UserId>, StoreError>;
 
-    /// The account an identifier belongs to, in one read. Sign-in calls only
-    /// this, so a known and an unknown identifier cost the store the same
-    /// work. The default reads twice ([`lookup`](Self::lookup), then
-    /// [`account`](Self::account)); a networked adapter must answer in one
-    /// round trip.
+    /// The account an identifier belongs to, in one read (one round trip
+    /// for a networked store). Sign-in calls only this, so a known and an
+    /// unknown identifier cost the store the same work. Required, with no
+    /// default: a default of two reads would make them cost differently.
     ///
     /// # Errors
     ///
     /// [`StoreError`].
-    fn account_by_identifier(
-        &self,
-        identifier: &Identifier,
-    ) -> Result<Option<Account>, StoreError> {
-        match self.lookup(identifier)? {
-            Some(user) => self.account(user),
-            None => Ok(None),
-        }
-    }
+    fn account_by_identifier(&self, identifier: &Identifier)
+    -> Result<Option<Account>, StoreError>;
 
     /// An account.
     ///

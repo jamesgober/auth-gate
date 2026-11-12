@@ -311,13 +311,17 @@ impl SessionStore for MemorySessions {
         Ok(out)
     }
 
-    fn use_once(&self, key: [u8; 32], until: UnixTime) -> Result<bool, StoreError> {
+    fn use_once(&self, key: [u8; 32], until: UnixTime, now: UnixTime) -> Result<bool, StoreError> {
         let mut once = self.once.lock().map_err(poisoned)?;
         if once.contains_key(&key) {
             return Ok(false);
         }
         if once.len() >= self.capacity {
-            return Err(StoreError::Full);
+            // Full: forget what has expired before refusing anything.
+            once.retain(|_, u| *u > now);
+            if once.len() >= self.capacity {
+                return Err(StoreError::Full);
+            }
         }
         once.insert(key, until);
         Ok(true)

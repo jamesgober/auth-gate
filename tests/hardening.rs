@@ -482,3 +482,89 @@ fn test_default_ends_session_when_client_wholly_changes() {
         Authentication::Guest(_)
     ));
 }
+
+/// Codes fired together from several prompts are counted before they are
+/// checked, so no more are checked than the lockout allows.
+#[test]
+fn test_concurrent_codes_never_pass_the_threshold() {
+    let w = world();
+    let (user, secret) = confirmed_totp(&w, "a@x.io", Standing::Active);
+    let prompts: Vec<String> = (0..3)
+        .map(|_| {
+            let SignIn::NeedsSecondFactor(ch) = w.gate.sign_in("a@x.io", PW, &client()) else {
+                panic!()
+            };
+            ch.to_text()
+        })
+        .collect();
+    let codes = wrong_codes(&secret, w.gate.now(), 3);
+    let barrier = std::sync::Barrier::new(9);
+    let checked = AtomicU32::new(0);
+    std::thread::scope(|s| {
+        for prompt in &prompts {
+            for code in &codes {
+                let (gate, barrier, checked) = (&w.gate, &barrier, &checked);
+                s.spawn(move || {
+                    barrier.wait();
+                    if let SignIn::Failed(f) = gate.second_factor(prompt, code, &client()) {
+                        if f.reason() == FailureReason::WrongCode {
+                            checked.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+        }
+    });
+    // Three password steps already counted; ten attempts allowed in all.
+    let checked = checked.load(Ordering::SeqCst);
+    assert!(checked <= 7, "{checked} codes checked past the threshold");
+    assert!(locked(&w, user));
+}
+
+/// A locked known account and an unknown identifier cost the store the
+/// same work: one read and one write.
+#[test]
+fn test_locked_and_unknown_accounts_do_equal_store_work() {
+    let ids = Arc::new(Hooked::new());
+    let w = world_with_ids(ids.clone());
+    w.gate
+        .create_account("a@x.io", PW, Standing::Active, &[])
+        .unwrap();
+    for _ in 0..10 {
+        let _ = w.gate.sign_in("a@x.io", "wrong guess", &client());
+    }
+    ids.counts();
+    let _ = w.gate.sign_in("a@x.io", "wrong guess", &client());
+    let locked_known = ids.counts();
+    let _ = w.gate.sign_in("nobody@x.io", "wrong guess", &client());
+    let unknown = ids.counts();
+    assert_eq!(locked_known, (1, 1));
+    assert_eq!(unknown, (1, 1));
+}
+
+/// A full single-use map forgets expired values instead of refusing new
+/// ones, so second-factor and passkey sign-in keep working without a timer.
+#[test]
+fn test_single_use_map_evicts_expired_when_full() {
+    let store = MemorySessions::with_limits(2, 1, 1000);
+    let t = UnixTime::from_secs(1_700_000_000);
+    let soon = t + Duration::from_secs(1);
+    assert!(store.use_once([1; 32], soon, t).unwrap());
+    assert!(store.use_once([2; 32], soon, t).unwrap());
+    assert!(
+        store.use_once([3; 32], soon, t).is_err(),
+        "full, nothing expired yet"
+    );
+    let later = t + Duration::from_secs(5);
+    assert!(
+        store
+            .use_once([3; 32], later + Duration::from_secs(60), later)
+            .unwrap()
+    );
+    assert!(
+        !store
+            .use_once([3; 32], later + Duration::from_secs(60), later)
+            .unwrap(),
+        "still once"
+    );
+}

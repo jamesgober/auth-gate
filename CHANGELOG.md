@@ -11,12 +11,48 @@
 
 ## [Unreleased]
 
+---
+
+## [0.5.0] - 2026-11-11
+
+### Fixed
+
+- Each sign-in attempt (password or second-factor code) is counted in the
+  store before it is checked, and refused unchecked past the threshold.
+  Requests in flight together can no longer get more checks than the
+  lockout allows; the store's own increment is the gate. A correct
+  password with a second factor still owed stays counted until the whole
+  sign-in passes.
+- A locked or blocked account now makes the same store write as an unknown
+  identifier (one read, one write either way).
+- `MemorySessions::use_once` forgets expired values when full instead of
+  refusing new ones, so second-factor and passkey sign-in keep working
+  without a purge timer.
+
+### Changed
+
+- `IdentityStore::account_by_identifier` is required (no default): a
+  default of two reads would make known and unknown identifiers cost the
+  store differently.
+- `SessionStore::use_once` takes `now`.
+
+### Migrating from 0.4
+
+- Store adapters implement `account_by_identifier` in one read (one round
+  trip), and add the `now` argument to `use_once`, dropping expired values
+  when full.
+- Each password step counts toward the lock while a second factor is owed:
+  ten attempts in the window, password steps and codes together, lock the
+  account.
+
 ### Added
 
 - A loom model of `MemorySessions` (`tests/loom.rs`, run with
   `RUSTFLAGS="--cfg loom"`): issuing a session against ending every session
   of the account, racing sign-ins past the per-account cap, and ending one
   session against ending all.
+
+See [`docs/release/v0.5.0.md`](./docs/release/v0.5.0.md).
 
 ---
 
