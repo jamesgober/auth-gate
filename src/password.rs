@@ -44,6 +44,8 @@ impl fmt::Debug for PasswordHash {
 pub struct PasswordPolicy {
     min_len: usize,
     params: Argon2Params,
+    // Set only by `insecure_for_tests`: skips the OWASP floor.
+    test_only: bool,
 }
 
 impl Default for PasswordPolicy {
@@ -60,16 +62,18 @@ impl PasswordPolicy {
         Self {
             min_len: 8,
             params: Argon2Params::default(),
+            test_only: false,
         }
     }
 
     /// Small Argon2id parameters for tests only: fast, and far too weak for
-    /// real passwords.
+    /// real passwords. Parameters set on this policy skip the OWASP floor.
     #[must_use]
     pub const fn insecure_for_tests() -> Self {
         Self {
             min_len: 8,
             params: Argon2Params::new(64, 1, 1, 32),
+            test_only: true,
         }
     }
 
@@ -80,7 +84,10 @@ impl PasswordPolicy {
         self
     }
 
-    /// Hash with these Argon2id parameters.
+    /// Hash with these Argon2id parameters. Building the gate refuses
+    /// parameters below the OWASP minimums for Argon2id (for example 19 MiB
+    /// with 2 passes) unless the policy came from
+    /// [`insecure_for_tests`](Self::insecure_for_tests).
     #[must_use]
     pub const fn params(mut self, params: Argon2Params) -> Self {
         self.params = params;
@@ -105,6 +112,11 @@ pub(crate) struct Hasher {
 
 impl Hasher {
     pub(crate) fn new(policy: PasswordPolicy, pepper: [u8; 32]) -> Result<Self, AuthError> {
+        if !policy.test_only && !meets_owasp(policy.params) {
+            return Err(AuthError::InvalidInput(
+                "argon2 parameters below the OWASP minimum",
+            ));
+        }
         let mut h = Self {
             policy,
             pepper: Zeroizing::new(pepper),
@@ -121,8 +133,10 @@ impl Hasher {
 
     fn hash_unchecked(&self, password: &[u8]) -> Result<PasswordHash, AuthError> {
         let p = self.peppered(password);
-        let phc =
-            kdf::argon2_hash_with_params(&*p, self.policy.params).map_err(|_| AuthError::Crypto)?;
+        // The floor was checked when the hasher was built; the ceiling lets
+        // parameters above crypt-io's default caps hash and verify.
+        let phc = kdf::argon2_hash_with_policy(&*p, self.policy.params, &self.ceiling())
+            .map_err(|_| AuthError::Crypto)?;
         Ok(PasswordHash(phc.into_boxed_str()))
     }
 
@@ -151,7 +165,7 @@ impl Hasher {
     /// timing does not tell whether it does.
     pub(crate) fn dummy_check(&self) -> bool {
         let p = self.peppered(b"no such account");
-        let _ = kdf::argon2_check(&self.dummy.0, &*p);
+        let _ = kdf::argon2_check_with_policy(&self.dummy.0, &*p, &self.ceiling());
         false
     }
 
@@ -160,11 +174,11 @@ impl Hasher {
     /// make one check cost a gigabyte.
     fn ceiling(&self) -> Argon2Policy {
         let p = self.policy.params;
-        Argon2Policy::new().with_max_cost(
-            p.m_cost.saturating_mul(4).max(64 * 1024),
-            p.t_cost.saturating_mul(4).max(8),
-            p.p_cost.saturating_mul(4).max(4),
-        )
+        let m = p.m_cost.saturating_mul(4).max(64 * 1024);
+        let t = p.t_cost.saturating_mul(4).max(8);
+        Argon2Policy::new()
+            .with_max_cost(m, t, p.p_cost.saturating_mul(4).max(4))
+            .with_max_work(u64::from(m) * u64::from(t))
     }
 
     /// Whether `hash` was made with weaker parameters than the policy's now.
@@ -175,6 +189,20 @@ impl Hasher {
             None => true,
         }
     }
+}
+
+/// The OWASP minimum configurations for Argon2id (Password Storage Cheat
+/// Sheet), and at least a 16-byte output.
+fn meets_owasp(p: Argon2Params) -> bool {
+    let m = match p.t_cost {
+        0 => return false,
+        1 => 47_104,
+        2 => 19_456,
+        3 => 12_288,
+        4 => 9_216,
+        _ => 7_168,
+    };
+    p.m_cost >= m && p.output_len >= 16
 }
 
 /// `m`, `t`, `p` from `$argon2id$v=19$m=..,t=..,p=..$salt$hash`.
@@ -218,6 +246,34 @@ mod tests {
             stronger.check(&hash, b"correct horse"),
             "old hashes still verify"
         );
+    }
+
+    #[test]
+    fn weak_parameters_are_refused_at_build() {
+        let weak = PasswordPolicy::new().params(Argon2Params::new(64, 1, 1, 32));
+        assert!(matches!(
+            Hasher::new(weak, [3; 32]),
+            Err(AuthError::InvalidInput(_))
+        ));
+        assert!(meets_owasp(Argon2Params::default()));
+        assert!(meets_owasp(Argon2Params::new(7_168, 5, 1, 32)));
+        assert!(!meets_owasp(Argon2Params::new(19_456, 1, 1, 32)));
+        assert!(!meets_owasp(Argon2Params::new(47_104, 1, 1, 8)));
+    }
+
+    #[test]
+    fn ceiling_admits_strong_configurations() {
+        // 512 MiB, 3 passes: above crypt-io's default caps, still hashable
+        // and checkable here (no hashing in the test: it would be slow).
+        let big = PasswordPolicy::new().params(Argon2Params::new(512 * 1024, 3, 1, 32));
+        let h = Hasher {
+            policy: big,
+            pepper: Zeroizing::new([0; 32]),
+            dummy: PasswordHash(Box::from("")),
+        };
+        let c = h.ceiling();
+        assert!(c.max_m_cost() >= 512 * 1024 && c.max_t_cost() >= 3);
+        assert!(c.max_work() >= 512 * 1024 * 3);
     }
 
     #[test]

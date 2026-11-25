@@ -3,7 +3,7 @@
 # =============================================================================
 [package]
 name    = "auth-gate"
-version = "0.5.0"
+version = "0.5.1"
 
 # Minimum Supported Rust Version (MSRV)
 rust-version = "1.85"
@@ -25,7 +25,6 @@ keywords = ["authentication", "session", "password", "webauthn", "totp"]
 categories = ["authentication", "web-programming", "cryptography"]
 
 # Links
-homepage      = "https://github.com/jamesgober/auth-gate"
 repository    = "https://github.com/jamesgober/auth-gate"
 documentation = "https://docs.rs/auth-gate"
 
@@ -58,7 +57,7 @@ prebuilt-nasm = ["crypt-io/prebuilt-nasm"]
 # Every cryptographic primitive: Argon2id, keyed BLAKE3, HKDF, SHA-256,
 # HOTP/TOTP, and WebAuthn signature checks (ES256, EdDSA, RS256). The one
 # audited-crypto exception to the zero third-party dependency rule.
-crypt-io = { version = "1.5", default-features = false, features = ["std", "zeroize", "mac-blake3", "hash-sha2", "kdf-hkdf", "kdf-argon2", "otp", "sign-p256", "sign-ed25519", "sign-rsa"] }
+crypt-io = { version = "1.6", default-features = false, features = ["std", "zeroize", "mac-blake3", "hash-sha2", "kdf-hkdf", "kdf-argon2", "otp", "sign-p256", "sign-ed25519", "sign-rsa"] }
 # OS CSPRNG for tokens, challenges, and codes (first party, zero dependencies).
 mod-rand = { version = "1", default-features = false, features = ["tier3"] }
 # Time-ordered account ids, UUIDv7 (first party, zero dependencies).

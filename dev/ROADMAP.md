@@ -7,6 +7,7 @@
 | 0.3.0 | done | property tests, fuzz targets, benchmarks, the end-to-end sign-in scenario |
 | 0.4.0 | done | hardening (second-factor guessing, lock beside the standing, session store race and bounds, equal store work, TOTP re-enrolment) |
 | 0.5.0 | done | attempts counted before checking, equal store work for locked accounts, single-use map evicts expired values, loom model |
+| 0.5.1 | done | builds against crypt-io 1.6+ (Argon2 parameter checks) |
 | 0.6.0 | next | single-use tokens (email verification, reset, sign-in links) through the stores; API keys (prefixed, keyed digest, scopes); an optional `IdentityStore::verify_password` hook for stores that keep hashes inside the database; ending one session by its public id (devices page) |
 | 0.7.0 | | rolling tokens with a grace window (theft detection); sudo mode (a short elevated window after a fresh factor); revocation epochs on the security bridge for multi-node stores |
 | 0.8.0 | | store adapters in their own crates: the embedded document database first, then the content database's auth engine |

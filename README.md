@@ -28,7 +28,7 @@
         <strong>MSRV is 1.85+</strong> (Rust 2024 edition). <code>#![forbid(unsafe_code)]</code>.
     </p>
     <blockquote>
-        <strong>Status: <code>0.5.0</code>, pre-release.</strong> Published on crates.io. The API may still change before 1.0.
+        <strong>Status: <code>0.5.1</code>, pre-release.</strong> Published on crates.io. The API may still change before 1.0.
     </blockquote>
 </div>
 
