@@ -25,7 +25,6 @@ keywords = ["authentication", "session", "password", "webauthn", "totp"]
 categories = ["authentication", "web-programming", "cryptography"]
 
 # Links
-homepage      = "https://github.com/jamesgober/auth-gate"
 repository    = "https://github.com/jamesgober/auth-gate"
 documentation = "https://docs.rs/auth-gate"
 
